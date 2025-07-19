@@ -1,0 +1,44 @@
+version: "3.8"
+
+services:
+
+  common: &default_image
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: appointment-report-service-dev:latest
+
+
+  appointment-report-service:
+    <<: *default_image
+    ports:
+      - "3006:8001"
+    env_file:
+      - .env.dev   
+
+    command: ["bash", "-c", "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8001"]
+
+  worker:
+    <<: *default_image
+    container_name: celery_worker_dev
+    depends_on:
+      - redis
+      - db
+    env_file:
+      - .env.dev
+    volumes:
+      - ./files:/app/static/uploads
+    command: celery -A app.worker worker --loglevel=info
+
+
+  beat:
+    <<: *default_image
+    container_name: celery_beat_dev
+    depends_on:
+      - redis
+      - db
+    env_file:
+      - .env.dev
+    volumes:
+      - ./files:/app/static/uploads
+    command: celery -A app.worker beat --loglevel=info --max-interval=30 -S redbeat.RedBeatScheduler
