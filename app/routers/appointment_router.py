@@ -5,14 +5,17 @@ from datetime import datetime, timedelta
 from app.db.session import get_db
 from app.dependencies.auth import get_current_user, get_current_user_id
 from app.db.models.models import Appointment, AppointmentStatus, UserModel, DoctorSpecialization
-from app.data.schemas.schema import UserType
-from app.data.schemas.appointment.appointmentschema import AppointmentCreate, AppointmentResponse, DoctorResponse,AppointmentUpdate, AppointmentStatusUpdate
+from app.data.schemas.appointment.appointmentschema import (
+    AppointmentCreate, AppointmentResponse, DoctorResponse,
+    AppointmentUpdate, AppointmentStatusUpdate,UserType
+    )
 from typing import Optional, List
 from app.config import config
 from datetime import datetime, timezone
 from sqlalchemy import func  # Add this import at the top of your file
 from pytz import timezone as pytz_timezone
 from app.services.appointment_service import update_appointment_by_admin, update_appointment_status_by_doctor
+from services.cache_user_service import get_user_info
 
 appointment_router = APIRouter(
     prefix=f"{config.API_PREFIX}",
@@ -54,7 +57,7 @@ def is_doctor_available(db: Session, doctor_id: int, appointment_date: datetime)
 async def book_appointment(
     appointment: AppointmentCreate,
     db: Session = Depends(get_db),
-    current_user: UserModel = Depends(get_current_user)
+    current_user_id: int = Depends(get_current_user_id)
 ):
     current_time = datetime.now(timezone.utc)
     if appointment.appointment_date.astimezone(timezone.utc) < current_time:
@@ -63,79 +66,48 @@ async def book_appointment(
             detail="Appointment time must be in the future"
         )
 
-    doctor = db.query(UserModel).filter(
-        UserModel.id == appointment.doctor_id,
-        UserModel.user_type == UserType.DOCTOR.value
-    ).first()
-    
-    if not doctor:
+    doctor = get_user_info(appointment.doctor_id)
+    if not doctor or doctor.get("user_type") != "doctor":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Doctor not found"
         )
-    
+
     if not is_doctor_available(db, appointment.doctor_id, appointment.appointment_date):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Doctor is not available at this time"
         )
-    
+
+
     existing_appointment = db.query(Appointment).filter(
         Appointment.doctor_id == appointment.doctor_id,
         Appointment.appointment_date == appointment.appointment_date,
         Appointment.status != AppointmentStatus.CANCELLED
     ).first()
-    
+
     if existing_appointment:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Time slot already booked"
         )
-    
+
+    # ✅ Create new appointment
     db_appointment = Appointment(
         doctor_id=appointment.doctor_id,
-        patient_id=current_user.id,
+        patient_id=current_user_id,
         appointment_date=appointment.appointment_date,
         notes=appointment.notes,
         status=AppointmentStatus.PENDING.value
     )
-    
+
     db.add(db_appointment)
     db.commit()
     db.refresh(db_appointment)
-    
+
     return db_appointment
 
 
-
-# @appointment_router.get("/get_doctor_list", response_model=List[DoctorResponse])
-# def get_doctors(
-#     specialization: Optional[str] = Query(None),
-#     division: Optional[str] = Query(None),
-#     district: Optional[str] = Query(None),
-#     thana: Optional[str] = Query(None),
-#     available: Optional[bool] = Query(None),  # If True, filter only doctors with available_timeslots
-#     skip: int = 0,
-#     limit: int = 10,
-#     db: Session = Depends(get_db),
-    
-# ):
-#     query = db.query(UserModel).filter(UserModel.user_type == "doctor")
-#     if division:
-#         query = query.filter(UserModel.division == division)
-#     if district:
-#         query = query.filter(UserModel.district == district)
-#     if thana:
-#         query = query.filter(UserModel.thana == thana)
-#     if available:
-#         query = query.filter(UserModel.available_timeslots.isnot(None))
-#     if specialization:
-#         query = query.join(UserModel.specializations).filter(
-#             DoctorSpecialization.specialized.ilike(f"%{specialization}%")
-#         )
-
-#     doctors = query.options(joinedload(UserModel.specializations)).offset(skip).limit(limit).all()
-#     return doctors
 
 
 @appointment_router.get("/get_appointment_list", response_model=List[AppointmentResponse])
@@ -150,6 +122,7 @@ def get_appointments(
     current_user: UserModel = Depends(get_current_user)
 ):
         # Only allow admin users
+    
     if current_user.user_type != UserType.ADMIN.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -157,7 +130,6 @@ def get_appointments(
         )
     
     query = db.query(Appointment)
-
     # Apply filters conditionally
     if doctor_id is not None:
         query = query.filter(Appointment.doctor_id == doctor_id)
@@ -170,8 +142,28 @@ def get_appointments(
 
     # Apply pagination
     appointments = query.order_by(Appointment.appointment_date).offset(skip).limit(limit).all()
+    response = []
+    for appointment in appointments:
+        doctor_data = get_user_info(appointment.doctor_id)
+        doctor_name = doctor_data["full_name"] if doctor_data else None
+        patient_data = get_user_info(appointment.patient_id)
+        patient_name = patient_data["full_name"] if patient_data else None
 
-    return appointments
+        response.append(AppointmentResponse(
+            id=appointment.id,
+            appointment_date=appointment.appointment_date,
+            doctor_id=appointment.doctor_id,
+            doctor_name=doctor_name,
+            patient_id=appointment.patient_id,
+            patient_name=patient_name,
+            notes=appointment.notes,
+            status=appointment.status,
+            # include any other fields you want to pass
+        ))
+
+    return response
+
+    # return appointments
 
 
 @appointment_router.get("/get_appointment_list_by_user", response_model=List[AppointmentResponse])

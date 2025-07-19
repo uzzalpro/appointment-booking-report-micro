@@ -31,6 +31,7 @@ class AppointmentResponse(BaseModel):
     patient_id: int
     appointment_date: datetime
     notes: Optional[str] = None
+    doctor_name: Optional[str] = None 
     status: AppointmentStatus
     
     class Config:

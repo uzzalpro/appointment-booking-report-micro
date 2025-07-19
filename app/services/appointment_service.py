@@ -2,13 +2,14 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 from app.db.models.models import Appointment
 from app.data.schemas.appointment.appointmentschema import AppointmentUpdate, AppointmentStatus
-
+from services.cache_user_service import get_user_info
 
 def update_appointment_by_admin(
     db: Session,
     appointment_id: int,
     update_data: AppointmentUpdate
 ) -> Appointment:
+    
     appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
 
     if not appointment:
