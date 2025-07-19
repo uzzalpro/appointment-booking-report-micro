@@ -4,7 +4,10 @@ import re
 import enum
 from datetime import datetime, timezone
 
-
+class UserType(str, enum.Enum):
+    ADMIN = "admin"
+    DOCTOR = "doctor"
+    PATIENT = "patient"
 
 class AppointmentStatus(str, enum.Enum):
     PENDING = "pending"

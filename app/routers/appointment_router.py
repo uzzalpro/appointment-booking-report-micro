@@ -24,17 +24,19 @@ appointment_router = APIRouter(
 
 
 
-def is_doctor_available(db: Session, doctor_id: int, appointment_date: datetime) -> bool:
+def is_doctor_available(doctor_id: int, appointment_date: datetime) -> bool:
+    # Convert to local timezone (Asia/Dhaka)
     tz = pytz_timezone("Asia/Dhaka")
     appointment_date_local = appointment_date.astimezone(tz)
     appointment_time = appointment_date_local.time()
 
-    doctor = db.query(UserModel).filter(UserModel.id == doctor_id).first()
-    if not doctor or not doctor.available_timeslots:
+    # ✅ Get doctor info from Redis
+    doctor = get_user_info(doctor_id)
+    if not doctor or doctor.get("user_type") != "doctor" or not doctor.get("available_timeslots"):
         return False
 
     available_slots = []
-    for slot in doctor.available_timeslots.split(','):
+    for slot in doctor["available_timeslots"].split(','):
         try:
             start_str, end_str = slot.split('-')
             available_slots.append((start_str.strip(), end_str.strip()))
@@ -158,7 +160,6 @@ def get_appointments(
             patient_name=patient_name,
             notes=appointment.notes,
             status=appointment.status,
-            # include any other fields you want to pass
         ))
 
     return response
@@ -218,14 +219,25 @@ def update_appointment(
     db: Session = Depends(get_db),
     current_user: UserModel = Depends(get_current_user)
 ):
-    # Admin-only access
+    """
+    Admin-only endpoint to update an appointment.
+    """
+    # ✅ Restrict access to Admins only
     if current_user.user_type != UserType.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admin users can update appointments"
+            detail="Only admin users can update appointments."
         )
 
+    # ✅ Call service layer to update appointment
     updated_appointment = update_appointment_by_admin(db, appointment_id, payload)
+
+    if not updated_appointment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Appointment with ID {appointment_id} not found."
+        )
+
     return updated_appointment
 
 
@@ -239,10 +251,14 @@ def get_doctor_appointments(
     db: Session = Depends(get_db),
     current_user: UserModel = Depends(get_current_user)
 ):
+    """
+    Fetch appointments for the currently logged-in doctor,
+    optionally filtered by status, start_date, and end_date.
+    """
     if current_user.user_type != UserType.DOCTOR:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only doctors can access this endpoint"
+            detail="Only doctors can access this endpoint."
         )
 
     query = db.query(Appointment).filter(Appointment.doctor_id == current_user.id)
@@ -255,14 +271,14 @@ def get_doctor_appointments(
         query = query.filter(Appointment.appointment_date <= end_date)
 
     appointments = (
-        query
-        .order_by(Appointment.appointment_date)
-        .offset(skip)
-        .limit(limit)
-        .all()
+        query.order_by(Appointment.appointment_date)
+             .offset(skip)
+             .limit(limit)
+             .all()
     )
 
     return appointments
+
 
 
 @appointment_router.put("/doctor/update_appointment_status/{appointment_id}", response_model=AppointmentResponse)
